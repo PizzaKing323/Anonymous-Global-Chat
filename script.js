@@ -1,22 +1,82 @@
 
-const socket = io();
+const SUPABASE_URL = "https://vcnvyqmcuekjpajeevze.supabase.co/";
+const SUPABASE_KEY = "sb_publishable_Kxe-IRP9FnsHgKtTkyLsVA_qfM00kJI";
+
+const db = supabase.createClient(
+  SUPABASE_URL,
+  SUPABASE_KEY
+);
 
 const chat = document.getElementById("chat");
 const input = document.getElementById("messageInput");
 const sendButton = document.getElementById("sendButton");
-const imageInput = document.getElementById("imageInput");
 const online = document.getElementById("online");
 
-function sendMessage() {
+const username = "Guest-" +
+  Math.floor(1000 + Math.random() * 9000);
+
+// Display a message
+function displayMessage(data) {
+  const message = document.createElement("div");
+  message.className = "message";
+
+  const name = document.createElement("div");
+  name.className = "username";
+  name.textContent = data.username;
+
+  message.appendChild(name);
+
+  if (data.content) {
+    const text = document.createElement("div");
+    text.textContent = data.content;
+    message.appendChild(text);
+  }
+
+  chat.appendChild(message);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+// Load previous messages
+async function loadMessages() {
+  const { data, error } = await db
+    .from("messages")
+    .select("*")
+    .order("created_at", { ascending: true })
+    .limit(100);
+
+  if (error) {
+    console.error(error);
+    online.textContent = "Database connection error";
+    return;
+  }
+
+  chat.replaceChildren();
+
+  data.forEach(displayMessage);
+}
+
+// Send a message
+async function sendMessage() {
   const text = input.value.trim();
 
   if (!text) return;
 
-  socket.emit("chat-message", {
-    text: text
-  });
+  sendButton.disabled = true;
 
-  input.value = "";
+  const { error } = await db
+    .from("messages")
+    .insert({
+      username: username,
+      content: text
+    });
+
+  if (error) {
+    alert("Message failed to send: " + error.message);
+  } else {
+    input.value = "";
+  }
+
+  sendButton.disabled = false;
 }
 
 sendButton.addEventListener("click", sendMessage);
@@ -27,81 +87,29 @@ input.addEventListener("keydown", (event) => {
   }
 });
 
-imageInput.addEventListener("change", async () => {
-  const file = imageInput.files[0];
+// Listen for new messages
+async function startChat() {
+  await loadMessages();
 
-  if (!file) return;
-
-  if (file.size > 2 * 1024 * 1024) {
-    alert("Image must be smaller than 2 MB.");
-    imageInput.value = "";
-    return;
-  }
-
-  const allowed = [
-    "image/jpeg",
-    "image/png",
-    "image/gif",
-    "image/webp"
-  ];
-
-  if (!allowed.includes(file.type)) {
-    alert("Unsupported image type.");
-    imageInput.value = "";
-    return;
-  }
-
-  const formData = new FormData();
-  formData.append("image", file);
-
-  try {
-    const response = await fetch("/upload", {
-      method: "POST",
-      body: formData
+  db.channel("global-chat")
+    .on(
+      "postgres_changes",
+      {
+        event: "INSERT",
+        schema: "public",
+        table: "messages"
+      },
+      (payload) => {
+        displayMessage(payload.new);
+      }
+    )
+    .subscribe((status) => {
+      if (status === "SUBSCRIBED") {
+        online.textContent = "🟢 Connected to global chat";
+      } else if (status === "CHANNEL_ERROR") {
+        online.textContent = "Chat connection error";
+      }
     });
+}
 
-    if (!response.ok) throw new Error("Upload failed");
-
-    const result = await response.json();
-
-    socket.emit("chat-message", {
-      image: result.image
-    });
-
-  } catch (error) {
-    alert("Could not upload image.");
-  }
-
-  imageInput.value = "";
-});
-
-socket.on("chat-message", (data) => {
-  const message = document.createElement("div");
-  message.className = "message";
-
-  const username = document.createElement("div");
-  username.className = "username";
-  username.textContent = data.username;
-
-  message.appendChild(username);
-
-  if (data.text) {
-    const text = document.createElement("div");
-    text.textContent = data.text;
-    message.appendChild(text);
-  }
-
-  if (data.image) {
-    const image = document.createElement("img");
-    image.src = data.image;
-    image.alt = "Shared image";
-    message.appendChild(image);
-  }
-
-  chat.appendChild(message);
-  chat.scrollTop = chat.scrollHeight;
-});
-
-socket.on("online-count", (count) => {
-  online.textContent = "🟢 " + count + " people online";
-});
+startChat();
